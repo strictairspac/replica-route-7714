@@ -1,9 +1,10 @@
-import traceback,json
+import traceback,json,os
 from pathlib import Path
 from src.config.database import Session
 from src.models.entities import Trial
 from src.services.trials import queue
 from src.services.routing import simulate
+ARTIFACTS=Path(os.getenv('ARTIFACTS_DIR','/artifacts'))
 while True:
     Path('/tmp/worker-heartbeat').touch()
     item=queue.blpop('replicaroute:queue',timeout=2)
@@ -15,7 +16,8 @@ while True:
         result=simulate(snapshot['nodes'],snapshot['request_set']['events'],delay,sticky)
         with Session() as db:
             obj=db.get(Trial,ident);obj.result=result;obj.status='completed';db.commit()
-        Path(f'/artifacts/route-{ident}.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
+        ARTIFACTS.mkdir(parents=True,exist_ok=True)
+        (ARTIFACTS/f'route-{ident}.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
     except Exception as e:
         traceback.print_exc()
         with Session() as db:

@@ -1,0 +1,22 @@
+import {table} from '../components/common/table.js';import {swapBadge} from '../components/common/badge.js';import {esc,date} from '../utils/html.js';import {CHECK_STATES} from '../constants/enums.js';
+const checkRow=c=>`<tr><td><span class="badge ${c.status==='pass'?'completed':c.status==='fail'?'failed':''}">${esc(CHECK_STATES[c.status]||c.status)}</span></td><td><strong>${esc(c.label)}</strong><small>${esc(c.key)}</small></td><td>${esc(c.detail)}</td></tr>`;
+export function swapEvidencePage(trial){
+  if(!trial)return '<div class="empty">还没有换座证据。先在「换座编排」里排一次两站换座演练。</div>';
+  const r=trial.result;
+  if(!r)return `<div class="evidence-top"><div><span class="eyebrow">SWAP EVIDENCE / #${trial.id}</span><h2>${esc(trial.name)} ${swapBadge(trial.state)}</h2></div></div><div class="notice">${esc(trial.error||'没有结果记录')}</div>`;
+  const s=r.summary;const timing=r.timing?.[trial.swap_key]||{};const passes=r.checks.filter(c=>c.status==='pass').length;const fails=r.checks.filter(c=>c.status==='fail').length;
+  const headline=fails?`${fails} 项检查未通过`:s.confirmed&&!s.aborted?'两站换座与凭据规则均满足':(!s.confirmed&&s.aborted?'换座已按规则撤销，两票保持原座':'本次时序未产生成交，两票保持原座');
+  const move=r.moves?.[0];
+  const ticketRows=r.tickets.map(t=>[`<strong>#${t.id}</strong><small>${esc(t.holder)}</small>`,esc(t.station),esc(t.seat_before),esc(t.seat_after),t.seat_before===t.seat_after?'保持原座':'已换座']);
+  const attempts=(move?.attempts||[]).map(a=>[`第 ${a.attempt} 次`,`${a.requested_at_ms}ms`,swapBadge(a.state),`${a.lock_wait_ms??'—'} / ${a.confirm_wait_ms??'—'} ms`,esc(a.reason),a.receipts.map(x=>`${esc(x.kind)}@${esc(x.station)} ${x.at_ms}ms`).join('<br>')]);
+  return `<div class="evidence-top"><div><span class="eyebrow">SWAP EVIDENCE / #${trial.id}</span><h2>${esc(trial.name)} ${swapBadge(trial.state)}</h2><p>${date(trial.created_at)} · 幂等键 ${esc(trial.swap_key)} · 车票与链路时序已冻结</p></div><button id="swap-export" data-id="${trial.id}">导出 JSON ↓</button></div>
+  <div class="verdict"><div class="verdict-icon">${fails?'!':'✓'}</div><div><span class="eyebrow">TWO-STATION SWAP CHECK</span><h2>${headline}</h2><p>成交 ${s.confirmed} · 撤销 ${s.aborted} · 中断 ${s.interrupted} · 去重重试 ${s.deduplicated_retries} · 查票 ${s.queries}（半笔 ${s.half_swap_observations}）· 改签 ${s.reissues_applied} 生效 / ${s.reissues_rejected} 拒绝</p></div><div class="equation">${s.confirmed}<span> / </span>${s.swaps}</div></div>
+  <div class="policy-strip">锁票 ${r.policy.lock_ms}ms <span>／</span> 准备 ${r.policy.prepare_ms}ms <span>／</span> 凭据传递 ${r.policy.confirm_ms}ms <span>／</span> 确认超时 ${r.policy.abort_after_ms}ms <span>／</span> 本次锁票等待 ${timing.lock_wait_ms??'—'}ms · 确认等待 ${timing.confirm_wait_ms??'—'}ms</div>
+  <div class="section-top"><h2>车票归属</h2><span>冻结输入 / 结果归属</span></div>${table(['车票','所在站','换前座号','换后座号','结果'],ticketRows)}
+  <div class="section-top"><h2>换座尝试</h2><span>锁票 / 确认 等待为模拟毫秒</span></div>${attempts.length?table(['尝试','发起','状态','锁票 / 确认等待','结果理由','凭据'],attempts):'<div class="empty">本次时序没有发起换座。</div>'}
+  <div class="section-top"><h2>检查项</h2><span>${passes} PASS / ${fails} FAIL</span></div><div class="table-wrap"><table><thead><tr><th>结论</th><th>检查</th><th>说明</th></tr></thead><tbody>${r.checks.map(checkRow).join('')}</tbody></table></div>
+  <div class="section-top"><h2>查票视图</h2><span>不得看到半笔交换</span></div>${r.queries.length?table(['时间','查询站','覆盖车票','看到座号','换座状态','一致性'],r.queries.map(q=>[`${q.at_ms}ms`,esc(q.station),q.tickets.map(x=>'#'+x).join(' '),Object.entries(q.view).map(([k,v])=>`#${esc(k)} ${esc(v)}`).join('<br>'),swapBadge(q.move_state),q.consistent?'一致':'<span class="rejected">半笔交换</span>'])):'<div class="empty">本次时序没有查票。</div>'}
+  <div class="section-top"><h2>改签记录</h2><span>换座并发 / 断联期间</span></div>${r.reissues.length?table(['时间','车票','所在站','原座 → 新座','结果'],r.reissues.map(x=>[`${x.at_ms}ms`,'#'+x.ticket,esc(x.station||''),x.applied?`${esc(x.from_seat)} → ${esc(x.to_seat)}`:'—',x.applied?`<span class="badge completed">生效</span>`:`<span class="badge failed">拒绝</span><small>${esc(x.reason)}</small>`])):'<div class="empty">本次时序没有改签。</div>'}
+  <div class="section-top"><h2>逐事件流水</h2><span>受控模型 / 不连接真实两站集群</span></div>${table(['时间','事件','细节'],r.trace.map(t=>[`${t.at_ms}ms`,esc(t.kind),esc(JSON.stringify(t.detail))]))}
+  <div class="evidence-notes"><section><h3>凭据存哪、何时确认</h3><p>${esc(r.policy.receipt_rule)}</p><p>${esc(r.policy.lock_scope)}。${esc(r.policy.simulated_clock)}</p></section><section><h3>确定性摘要</h3><p>${esc(r.mode)}</p><code>${esc(r.checksum)}</code></section></div>`;
+}

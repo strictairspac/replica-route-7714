@@ -1,3 +1,5 @@
 -- Initial schema is applied idempotently by SQLAlchemy metadata.create_all.
--- Authoritative entities: users, nodes, request_sets, trials, audit_logs.
+-- Authoritative entities: users, nodes, request_sets, trials, seat_swap_trials, audit_logs.
 -- Routing request events and frozen input/result evidence are MySQL JSON.
+-- seat_swap_trials stores frozen tickets+events+policy and the full swap result (moves, receipts,
+-- queries, reissues, commit log, checks, checksum); no extra table is needed per rehearsal.

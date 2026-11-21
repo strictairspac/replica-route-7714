@@ -1,4 +1,4 @@
-# 站点读流量路由演练
+# 站点读流量路由与两站换座演练
 
 栖原站点运维组（11人）在交接班前，用节点位点与会话时序复核读写路由，明确何时读副本、何时回主库、何时必须拒绝读取。
 
@@ -8,7 +8,9 @@
 
 三个核心实体：复制节点 Node（主副角色/在线状态/日志谱系/位点/延迟），会话请求集 RequestSet（带时序的读写、复制应用、故障恢复事件），路由试验 Trial（冻结输入、策略参数与结果）。4业务页+登录页，另有管理员审计。
 
-**这是受控复制路由模型，不连接真实主从集群。** MySQL真实保存节点、请求、任务及证据；Python真实逐事件计算策略。日志位点采用命名谱系中的单调整数，未实现完整GTID集合/真实复制协议。
+另有第五组演练：两站各存一张车票时的座位互换（实体 SeatSwapTrial，页面「换座编排 / 换座证据」）。规则：换座只锁本次两张票，其余车票可并发改签；两票只能一起换，查票永远看不到半笔交换；两站断联时，其余车票照常在本站改签；成交凭据与确认时机固定如下——决定站在决定时立即写 decision 凭据，另一站收到同一决定后才写自己的，两站凭据齐全才同时换座并写 confirmed 凭据。决定刚记下即断联时，另一站等确认，超过 abort_after_ms 即撤销且两票保持原座。已确认的换座按 swap_key 幂等：重试只返回原归属，不二次换座；中断恢复后已确认的归属不丢，未确认的一笔按撤销处理后再重试。
+
+**这是受控复制路由模型，不连接真实主从集群；换座同样是受控两站模型，不连接真实分布式事务。** MySQL真实保存节点、请求、任务、换座演练及证据；Python真实逐事件计算策略。日志位点采用命名谱系中的单调整数，未实现完整GTID集合/真实复制协议；换座等待使用模拟毫秒，同输入同摘要。
 
 ## 快速启动
 
@@ -25,6 +27,12 @@ docker compose exec -T backend python -m scripts.seed_demo
 |admin|admin@qiyuan.test|Demo2026!|全部业务写入、运行与审计|
 |operator|operator@qiyuan.test|Demo2026!|节点/请求编辑、运行、导出|
 |viewer|viewer@qiyuan.test|Demo2026!|只读和导出，写API403|
+
+## 换座演练怎么读
+
+「换座编排」排一次演练：填写车票（至少两张、分属两站）、幂等键、时序事件与四个时序参数（锁票、准备、凭据传递、确认超时）。事件类型 `swap / retry / reissue / query / link_down / link_up / crash / torn_write`；`torn_write` 是故障注入，用来证明查票的“半笔交换”检查确实会报警。
+
+「换座证据」对每笔换座给出逐次尝试：状态从待决/已锁两票/决定已记下走到成交或撤销，并分别显示锁票等待与确认等待毫秒、两站凭据、车票换前换后座号、每次查票视图、改签结果与逐事件流水。检查项分通过/未通过/未触发，“未触发”表示该时序没有覆盖这一类场景，不算失败。
 
 ## 一天的工作剧本
 
@@ -57,7 +65,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 |服务|技术|职责|
 |---|---|---|
-|frontend|原生HTML/CSS/JS + Nginx|4业务页、编辑表单、共享组件、/api代理|
+|frontend|原生HTML/CSS/JS + Nginx|6业务页（含换座编排/证据）、编辑表单、共享组件、/api代理|
 |backend|Python3.11/FastAPI/SQLAlchemy/PyJWT|校验、权限、审计、快照与导出|
 |worker|Python3.11|会话时序与路由算法|
 |db|MySQL8.0|真实持久化业务和JSON证据|
@@ -65,14 +73,16 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 各实体贯穿 `backend/src/{models,schemas,services,routes}` 和 `frontend/src/{api,stores,pages}`；其余强制目录含controllers/middlewares/config/constants/utils、components/common/hooks/types/router。三组件table/badge/frame共用；hooks/session/feedback和utils/forms/html共用；request_id/errors双中间件。
 
-共享枚举角色admin/operator/viewer与任务queued/running/completed/failed位于 `backend/src/constants/enums.py` / `frontend/src/constants/enums.js`，security/trials、frame/badge消费。节点角色primary/replica和状态healthy/down由node schema及前端表单定义，事件类型由request_set schema及路由算法定义。
+共享枚举角色admin/operator/viewer与任务queued/running/completed/failed位于 `backend/src/constants/enums.py` / `frontend/src/constants/enums.js`，security/trials、frame/badge消费。节点角色primary/replica和状态healthy/down由node schema及前端表单定义，事件类型由request_set schema及路由算法定义；换座状态pending/confirmed/aborted、检查结论pass/fail/not_exercised同样集中在两处枚举，换座事件类型由 `backend/src/schemas/ticket_swap.py` 与 `backend/src/services/swap.py` 定义。换座结果随SeatSwapTrial持久化，API为 `/swap_trials`（列表/创建/详情/导出），写权限与既有演练一致。
 
 环境变量见.env.example：COMPOSE_PROJECT_NAME、三端口、DB_PASSWORD、JWT_SECRET、SEED_DEMO。默认密码仅本地演示、JWT8小时；seed自然键仅补缺失，不覆盖修改。schema由metadata.create_all初始建表，无在线升级引擎。5服务均健康检查，backend/worker依赖健康db/redis，frontend依赖backend；数据库、Redis、worker产物使用命名卷。
 
 本地开发：Python3.11安装backend/requirements.txt、配置DATABASE_URL/REDIS_URL，在backend运行 `uvicorn src.main:app --reload` 和 `python -m src.worker`，前端经Nginx同源代理。停止清空：`docker compose down -v --remove-orphans`。
 
-限制：单worker串行、无生产任务重试/崩溃续跑；不模拟网络随机抖动、自动选主或完整GTID集合。Google Fonts离线回退，业务不依赖字体网络。
+限制：单worker串行、无生产任务重试/崩溃续跑；不模拟网络随机抖动、自动选主或完整GTID集合。换座演练的等待是模拟毫秒，不是真实网络时延。Google Fonts离线回退，业务不依赖字体网络。
+
+测试：`cd backend && python -m pytest tests -q`（算法与时序单测 + API权限/校验）。界面回归截图与结果在 `artifacts/gb-4108/`。
 
 ## License
 
-MIT。源码外 `../../test-artifacts/gb-4108/` 含真实测试、截图与结果。
+MIT。`artifacts/gb-4108/` 含界面回归截图与结果 JSON；算法/API 测试在 `backend/tests/`。
